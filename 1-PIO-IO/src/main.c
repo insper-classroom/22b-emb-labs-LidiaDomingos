@@ -98,8 +98,9 @@ void init(void)
 	
 	//Inicializa PC8 como saída
 	pio_set_output(LED_PIO1, LED_PIO_IDX_MASK1, 0, 0, 0);
-	pio_set_output(LED_PIO2, LED_PIO_IDX_MASK2, 0, 1, 1);
-	pio_set_output(LED_PIO3, LED_PIO_IDX_MASK3, 0, 2, 2);
+	pio_set_output(LED_PIO2, LED_PIO_IDX_MASK2, 0, 0, 0);
+	pio_set_output(LED_PIO3, LED_PIO_IDX_MASK3, 0, 0, 0);
+
 
 
 	// Ativa o PIO na qual o BOTÃO foi conectado
@@ -112,9 +113,10 @@ void init(void)
 	pio_set_input(BUT_PIO2, BUT_PIO_IDX_MASK2, PIO_DEFAULT);
 	pio_set_input(BUT_PIO3, BUT_PIO_IDX_MASK3, PIO_DEFAULT);
 	
-	pio_pull_up(BUT_PIO1,BUT_PIO_IDX_MASK1,0);
+	pio_pull_up(BUT_PIO1,BUT_PIO_IDX_MASK1,1);
 	pio_pull_up(BUT_PIO2,BUT_PIO_IDX_MASK2,1);
-	pio_pull_up(BUT_PIO3,BUT_PIO_IDX_MASK3,2);
+	pio_pull_up(BUT_PIO3,BUT_PIO_IDX_MASK3,1);
+
 
 }
 
