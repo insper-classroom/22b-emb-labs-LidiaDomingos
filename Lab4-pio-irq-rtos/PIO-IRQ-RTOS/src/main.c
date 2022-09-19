@@ -52,12 +52,9 @@ extern void xPortSysTickHandler(void);
 /* recursos RTOS                                                        */
 /************************************************************************/
 
-/** Semaforo a ser usado pela task led */
-SemaphoreHandle_t xSemaphoreBut;
-SemaphoreHandle_t xSemaphoreBut1;
-
 /** Queue for msg log send data */
 QueueHandle_t xQueueLedFreq;
+QueueHandle_t xQ_BUTTON_ID;
 
 /************************************************************************/
 /* prototypes local                                                     */
@@ -114,11 +111,13 @@ extern void vApplicationMallocFailedHook(void) {
 
 void but_callback(void) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-  xSemaphoreGiveFromISR(xSemaphoreBut, &xHigherPriorityTaskWoken);
+  uint32_t msg = 0;
+  xQueueSendFromISR(xQ_BUTTON_ID, (void *)&msg, 10);
 }
 void but1_callback(void) {
 	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-	xSemaphoreGiveFromISR(xSemaphoreBut1, &xHigherPriorityTaskWoken);
+	uint32_t msg1 = 1;
+	xQueueSendFromISR(xQ_BUTTON_ID,(void *)&msg1, 10);
 }
 
 /************************************************************************/
@@ -135,7 +134,7 @@ static void task_led(void *pvParameters) {
   /* tarefas de um RTOS não devem retornar */
   for (;;) {
     /* verifica se chegou algum dado na queue, e espera por 0 ticks */
-    if (xQueueReceive(xQueueLedFreq, &msg, (TickType_t) 0)) {
+    if (xQueueReceive(xQueueLedFreq, &msg, (TickType_t) delayMs)) {
       /* chegou novo valor, atualiza delay ! */
       /* aqui eu poderia verificar se msg faz sentido (se esta no range certo)
        */
@@ -148,7 +147,7 @@ static void task_led(void *pvParameters) {
     pin_toggle(LED_PIO, LED_IDX_MASK);
 
     /* suspende por delayMs */
-    vTaskDelay(delayMs);
+    //vTaskDelay(delayMs);
   }
 }
 
@@ -156,41 +155,30 @@ static void task_but(void *pvParameters) {
 
   /* iniciliza botao */
   BUT_init();
-
+	uint32_t msg = 0;
   uint32_t delayTicks = 2000;
 
   for (;;) {
     /* aguarda por tempo inderteminado até a liberacao do semaforo */
-    if (xSemaphoreTake(xSemaphoreBut, 1000)) {
-		
-      /* atualiza frequencia */
-      delayTicks -= 100;
-
+    if (xQueueReceive(xQ_BUTTON_ID, &msg, (TickType_t) 0)) {
       /* envia nova frequencia para a task_led */
-      xQueueSend(xQueueLedFreq, (void *)&delayTicks, 10);
 	    
-      printf("task_but: %d \n", delayTicks);
 
       /* garante range da freq. */
-      if (delayTicks == 100) {
-        delayTicks = 900;
+      if (msg == 0) {
+			delayTicks -= 100;
+			
+			if(delayTicks == 0){
+				delayTicks = 900; 
+				}
       }
+	  if (msg == 1) {
+		  delayTicks += 100;
+	  }
+	  printf("task_but: %d \n", delayTicks);
+	  xQueueSend(xQueueLedFreq, (void *)&delayTicks, 10);
+	  
     }
-	if (xSemaphoreTake(xSemaphoreBut1, 1000)) {
-		
-		/* atualiza frequencia */
-		delayTicks += 100;
-
-		/* envia nova frequencia para a task_led */
-		xQueueSend(xQueueLedFreq, (void *)&delayTicks, 10);
-		
-		printf("task_but: %d \n", delayTicks);
-
-		/* garante range da freq. */
-		if (delayTicks == 100) {
-			delayTicks = 900;
-		}
-	}
   }
   
 }
@@ -268,7 +256,7 @@ static void BUT_init(void) {
   NVIC_EnableIRQ(BUT_PIO_ID);
   NVIC_SetPriority(BUT_PIO_ID, 4); // Prioridade 4
   NVIC_EnableIRQ(BUT1_PIO_ID);
-  NVIC_SetPriority(BUT1_PIO_ID, 4); // Prioridade 5
+  NVIC_SetPriority(BUT1_PIO_ID, 4); // Prioridade 4
 }
 
 /************************************************************************/
@@ -288,16 +276,13 @@ int main(void) {
 	
   printf("Sys init ok \n");
 
-  /* Attempt to create a semaphore. */
-  xSemaphoreBut = xSemaphoreCreateBinary();
-  xSemaphoreBut1 = xSemaphoreCreateBinary();
-  if (xSemaphoreBut == NULL && xSemaphoreBut1 == NULL)
-    printf("falha em criar o semaforo \n");
+
 
   /* cria queue com 32 "espacos" */
   /* cada espaço possui o tamanho de um inteiro*/
+  xQ_BUTTON_ID = xQueueCreate(32, sizeof(uint32_t));
   xQueueLedFreq = xQueueCreate(32, sizeof(uint32_t));
-  if (xQueueLedFreq == NULL)
+  if (xQ_BUTTON_ID == NULL && xQueueLedFreq == NULL)
     printf("falha em criar a queue \n");
 
   /* Create task to make led blink */
