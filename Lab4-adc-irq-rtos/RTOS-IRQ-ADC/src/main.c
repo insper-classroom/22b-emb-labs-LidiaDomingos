@@ -18,6 +18,8 @@
 
 #define TASK_ADC_STACK_SIZE (1024 * 10 / sizeof(portSTACK_TYPE))
 #define TASK_ADC_STACK_PRIORITY (tskIDLE_PRIORITY)
+#define TASK_PROC_STACK_SIZE (1024 * 10 / sizeof(portSTACK_TYPE))
+#define TASK_PROC_STACK_PRIORITY (tskIDLE_PRIORITY)
 
 extern void vApplicationStackOverflowHook(xTaskHandle *pxTask,
                                           signed char *pcTaskName);
@@ -34,6 +36,7 @@ TimerHandle_t xTimer;
 
 /** Queue for msg log send data */
 QueueHandle_t xQueueADC;
+QueueHandle_t xQueuePROC;
 
 typedef struct {
   uint value;
@@ -82,10 +85,10 @@ extern void vApplicationMallocFailedHook(void) {
 /************************************************************************/
 
 static void AFEC_pot_callback(void) {
-  adcData adc;
-  adc.value = afec_channel_get_value(AFEC_POT, AFEC_POT_CHANNEL);
+  adcData proc;
+  proc.value = afec_channel_get_value(AFEC_POT, AFEC_POT_CHANNEL);
   BaseType_t xHigherPriorityTaskWoken = pdTRUE;
-  xQueueSendFromISR(xQueueADC, &adc, &xHigherPriorityTaskWoken);
+  xQueueSendFromISR(xQueuePROC, &proc, &xHigherPriorityTaskWoken);
 }
 
 /************************************************************************/
@@ -98,7 +101,7 @@ void vTimerCallback(TimerHandle_t xTimer) {
   afec_start_software_conversion(AFEC_POT);
 }
 
-static void task_adc(void *pvParameters) {
+static void task_proc(void *pvParameters) {
 
   // configura ADC e TC para controlar a leitura
   config_AFEC_pot(AFEC_POT, AFEC_POT_ID, AFEC_POT_CHANNEL, AFEC_pot_callback);
@@ -121,39 +124,29 @@ static void task_adc(void *pvParameters) {
   xTimerStart(xTimer, 0);
 
   // variável para recever dados da fila
-  adcData adc;
+  adcData proc;
 
   while (1) {
-    if (xQueueReceive(xQueueADC, &(adc), 1000)) {
-      printf("ADC: %d \n", adc);
+    if (xQueueReceive(xQueuePROC, &(proc), 1000)) {
+		int n = 0;
+		int soma = 0;
+		while (n < 11){
+			soma = soma + proc.value;
+			n++;
+		}
+		soma = soma/10;
+		if (n = 10){
+			n = 0;
+			xQueueSend(xQueueADC, &(soma), 10);	
+		}
     } else {
-      printf("Nao chegou um novo dado em 1 segundo");
+      printf("Nao chegou um novo dado em 1 segundo1");
     }
   }
 }
 
 static void task_adc(void *pvParameters) {
 
-  // configura ADC e TC para controlar a leitura
-  config_AFEC_pot(AFEC_POT, AFEC_POT_ID, AFEC_POT_CHANNEL, AFEC_pot_callback);
-
-  xTimer = xTimerCreate(/* Just a text name, not used by the RTOS
-                        kernel. */
-                        "Timer",
-                        /* The timer period in ticks, must be
-                        greater than 0. */
-                        100,
-                        /* The timers will auto-reload themselves
-                        when they expire. */
-                        pdTRUE,
-                        /* The ID is used to store a count of the
-                        number of times the timer has expired, which
-                        is initialised to 0. */
-                        (void *)0,
-                        /* Timer callback */
-                        vTimerCallback);
-  xTimerStart(xTimer, 0);
-
   // variável para recever dados da fila
   adcData adc;
 
@@ -161,7 +154,7 @@ static void task_adc(void *pvParameters) {
     if (xQueueReceive(xQueueADC, &(adc), 1000)) {
       printf("ADC: %d \n", adc);
     } else {
-      printf("Nao chegou um novo dado em 1 segundo");
+      printf("Nao chegou um novo dado em 1 segundo2");
     }
   }
 }
@@ -248,12 +241,18 @@ int main(void) {
   configure_console();
 
   xQueueADC = xQueueCreate(100, sizeof(adcData));
+  xQueuePROC = xQueueCreate(100, sizeof(adcData));
+
   if (xQueueADC == NULL)
     printf("falha em criar a queue xQueueADC \n");
 
   if (xTaskCreate(task_adc, "ADC", TASK_ADC_STACK_SIZE, NULL,
                   TASK_ADC_STACK_PRIORITY, NULL) != pdPASS) {
     printf("Failed to create test ADC task\r\n");
+  }
+  if (xTaskCreate(task_proc, "PROC", TASK_PROC_STACK_SIZE, NULL,
+  TASK_PROC_STACK_PRIORITY, NULL) != pdPASS) {
+	  printf("Failed to create test ADC task\r\n");
   }
 
   vTaskStartScheduler();
