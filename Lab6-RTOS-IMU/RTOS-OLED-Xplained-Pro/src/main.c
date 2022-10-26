@@ -17,6 +17,24 @@
 #define LED_IDX      8
 #define LED_IDX_MASK (1 << LED_IDX)
 
+// LED 1 OLED
+#define LED1_PIO            PIOA
+#define LED1_PIO_ID         ID_PIOA
+#define LED1_PIO_IDX        0
+#define LED1_PIO_IDX_MASK  (1 << LED1_PIO_IDX)
+
+// LED 2 OLED
+#define LED2_PIO            PIOC
+#define LED2_PIO_ID         ID_PIOC
+#define LED2_PIO_IDX        30
+#define LED2_PIO_IDX_MASK  (1 << LED2_PIO_IDX)
+
+// LED 3 OLED
+#define LED3_PIO            PIOB
+#define LED3_PIO_ID         ID_PIOB
+#define LED3_PIO_IDX        2
+#define LED3_PIO_IDX_MASK  (1 << LED3_PIO_IDX)
+
 /* Botao da placa */
 #define BUT_PIO     PIOA
 #define BUT_PIO_ID  ID_PIOA
@@ -34,6 +52,9 @@ extern void vApplicationMallocFailedHook(void);
 extern void xPortSysTickHandler(void);
 
 SemaphoreHandle_t xSemaphoreHouseDown;
+
+// Filas
+QueueHandle_t xQueueOrientacao;
 
 enum orientacao{ESQUERDA, FRENTE, DIREITA};
 	
@@ -111,9 +132,16 @@ void led_placa_init(void){
 	// Ativa PIO
 	pmc_enable_periph_clk(LED_PIO_ID);
 	
+	pmc_enable_periph_clk(LED1_PIO_ID);
+	pmc_enable_periph_clk(LED2_PIO_ID);
+	pmc_enable_periph_clk(LED3_PIO_ID);
+	
 	// Configura como OUTPUT
 	pio_configure(LED_PIO, PIO_OUTPUT_0, LED_IDX_MASK, PIO_DEFAULT);
-	
+	pio_set_output(LED1_PIO, LED1_PIO_IDX_MASK, 1, 0, 0);
+	pio_set_output(LED2_PIO, LED2_PIO_IDX_MASK, 1, 0, 0);
+	pio_set_output(LED3_PIO, LED3_PIO_IDX_MASK, 1, 0, 0);
+
 	// Outra forma de configurar como output
 	// POINTER, BITMASK, default level ,  pin configure open-drain , pull-up activate
 	// pio_set_output(p_pio, ul_mask, 0, 0, 0);
@@ -136,6 +164,10 @@ void pisca_led(Pio * p_pio , const uint32_t ul_mask , int n , int delay){
 /************************************************************************/
 
 void but_callback(void) {
+}
+
+void limpa_tudo(){
+	gfx_mono_draw_filled_rect(0,0, 128,32, GFX_PIXEL_CLR);
 }
 
 /**********************************************************sssss**************/
@@ -166,6 +198,49 @@ static void task_house_down(void *pvParameters) {
 		else{
 			pio_set(LED_PIO, LED_IDX_MASK);
 		}
+	}
+}
+
+static void task_orientacao(void *pvParameters) {
+	led_placa_init();
+	gfx_mono_ssd1306_init();
+	gfx_mono_draw_string("Exemplo RTOS", 0, 0, &sysfont);
+	int direcao;
+
+	for (;;)  {
+		if(xQueueReceive(xQueueOrientacao, &(direcao), 0)){
+			if (direcao == ESQUERDA){
+				limpa_tudo();
+				printf("entrei na esquerda");
+				gfx_mono_draw_string("ESQUERDA!", 0, 0, &sysfont);
+				pio_clear(LED1_PIO, LED1_PIO_IDX_MASK);
+				pio_set(LED2_PIO, LED2_PIO_IDX_MASK);
+				pio_set(LED3_PIO, LED3_PIO_IDX_MASK);
+			}
+			if (direcao == FRENTE){
+				limpa_tudo();
+				printf("entrei na frente");
+				gfx_mono_draw_string("FRENTE!", 0, 0, &sysfont);
+				pio_clear(LED2_PIO, LED2_PIO_IDX_MASK);
+				pio_set(LED1_PIO, LED1_PIO_IDX_MASK);
+				pio_set(LED3_PIO, LED3_PIO_IDX_MASK);
+			}
+			if (direcao == DIREITA){
+				limpa_tudo();
+				printf("entrei na direita");
+				gfx_mono_draw_string("DIREITA!", 0, 0, &sysfont);
+				pio_clear(LED3_PIO, LED3_PIO_IDX_MASK);
+				pio_set(LED1_PIO, LED1_PIO_IDX_MASK);
+				pio_set(LED2_PIO, LED2_PIO_IDX_MASK);
+			}
+			if (direcao == 4){
+				limpa_tudo();
+				printf("nao faz nada");
+				pio_set(LED3_PIO, LED3_PIO_IDX_MASK);
+				pio_set(LED1_PIO, LED1_PIO_IDX_MASK);
+				pio_set(LED2_PIO, LED2_PIO_IDX_MASK);
+			}
+	}
 	}
 }
 
@@ -234,7 +309,9 @@ static void task_imu(void *pvParameters) {
 	rtn = mcu6050_i2c_bus_write(MPU6050_DEFAULT_ADDRESS, MPU6050_RA_GYRO_CONFIG, bufferTX, 1);
 	if(rtn != TWIHS_SUCCESS)
 	printf("[ERRO] [i2c] [write] \n");
-	
+	float valor_anterior_yaw = 0.0;
+	float roll, pitch, yaw;
+	int d;
 	while(1) {
 		// Le valor do acc X High e Low
 		mcu6050_i2c_bus_read(MPU6050_DEFAULT_ADDRESS, MPU6050_RA_ACCEL_XOUT_H, &raw_acc_xHigh, 1);
@@ -287,7 +364,7 @@ static void task_imu(void *pvParameters) {
 		//printf("proc_gyr_y: %f \n", proc_gyr_y);
 		//printf("proc_gyr_z: %f \n", proc_gyr_z);
 		
-		if(sqrt(pow(proc_acc_x, 2) + pow(proc_acc_y, 2) + pow(proc_acc_z, 2)) < 0.3){
+		if(sqrt(pow(proc_acc_x, 2) + pow(proc_acc_y, 2) + pow(proc_acc_z, 2)) < 0.1){
 			printf("Em Queda!!");
 			xSemaphoreGive(xSemaphoreHouseDown);
 		}
@@ -304,11 +381,30 @@ static void task_imu(void *pvParameters) {
 		// dados em pitch roll e yaw
 		const FusionEuler euler = FusionQuaternionToEuler(FusionAhrsGetQuaternion(&ahrs));
 
-		//printf("Roll %0.1f, Pitch %0.1f, Yaw %0.1f\n", euler.angle.roll, euler.angle.pitch, euler.angle.yaw);
-
-
+		printf("Roll %0.1f, Pitch %0.1f, Yaw %0.1f\n", euler.angle.roll, euler.angle.pitch, euler.angle.yaw);
+		roll = euler.angle.roll;
+		pitch = euler.angle.pitch;
+		yaw = euler.angle.yaw;
+		
+		if ((yaw - sqrt(pow(valor_anterior_yaw, 2)) > 30) && pitch < 15){
+			printf("entro aqui no roll");
+			d = ESQUERDA;
+			xQueueSend(xQueueOrientacao, &d, 0);
+		}
+		else if (yaw < -30 && pitch < 15){
+			d = DIREITA;
+			xQueueSend(xQueueOrientacao, &d, 0);
+		}
+		else if (roll < -20 && pitch > 30){
+			d = FRENTE;
+			xQueueSend(xQueueOrientacao, &d, 0);
+		}
+		else {
+			d = 4;
+			xQueueSend(xQueueOrientacao, &d, 0);
+		}
 		// uma amostra a cada 1ms
-		vTaskDelay(1);
+		vTaskDelay(10);
 	}
 }
 
@@ -371,12 +467,21 @@ int main(void) {
 		printf("Failed to create oled imu\r\n");
 	}
 	
+	if (xTaskCreate(task_orientacao, "orientacao", TASK_OLED_STACK_SIZE, NULL, TASK_OLED_STACK_PRIORITY, NULL) != pdPASS) {
+		printf("Failed to create oled imu\r\n");
+	}
+	
 	
 	// Sem?foro
 	xSemaphoreHouseDown = xSemaphoreCreateBinary();
 	if (xSemaphoreHouseDown == NULL){
 		printf("falha em criar o semaforo \n");
 	}
+	
+	xQueueOrientacao = xQueueCreate(32, sizeof(int));
+	
+	if (xQueueOrientacao == NULL)
+		printf("falha em criar a queue \n");
 	/* Start the scheduler. */
 	vTaskStartScheduler();
 
