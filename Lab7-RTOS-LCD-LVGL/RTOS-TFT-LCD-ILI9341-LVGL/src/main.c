@@ -10,14 +10,17 @@
 LV_FONT_DECLARE(dseg70);
 LV_FONT_DECLARE(dseg40);
 LV_FONT_DECLARE(dseg30);
-
-
+LV_IMG_DECLARE(relogio);
 /************************************************************************/
 /* LCD / LVGL                                                           */
 /************************************************************************/
 
 #define LV_HOR_RES_MAX          (320)
 #define LV_VER_RES_MAX          (240)
+
+#define AFEC_POT AFEC0
+#define AFEC_POT_ID ID_AFEC0
+#define AFEC_POT_CHANNEL 5 // Canal do pino PB2
 
 /*A static or global variable to store the buffers*/
 static lv_disp_draw_buf_t disp_buf;
@@ -36,9 +39,12 @@ typedef struct  {
   uint32_t minute;
   uint32_t second;
 } calendar;
-
+// declarar a tela como global e estática
+static lv_obj_t * scr1;  // screen 1
+static lv_obj_t * scr2;  // screen 2
 /** Semaforo a ser usado pela task led */
 SemaphoreHandle_t xSemaphoreHora;
+QueueHandle_t xQueue_AFEC;
 /************************************************************************/
 /* RTOS                                                                 */
 /************************************************************************/
@@ -111,19 +117,121 @@ void RTC_Handler(void) {
     rtc_clear_status(RTC, RTC_SCCR_CALCLR);
     rtc_clear_status(RTC, RTC_SCCR_TDERRCLR);
 }
+
+static void AFEC_pot_Callback(void){
+	BaseType_t xHigherPriorityTaskWoken = pdTRUE;
+	int value;
+  	value = afec_channel_get_value(AFEC_POT, AFEC_POT_CHANNEL);
+	xQueueSendFromISR(xQueue_AFEC, &(value), &xHigherPriorityTaskWoken);
+}
+static void RTT_init(float freqPrescale, uint32_t IrqNPulses,
+uint32_t rttIRQSource) {
+
+	uint16_t pllPreScale = (int)(((float)32768) / freqPrescale);
+
+	rtt_sel_source(RTT, false);
+	rtt_init(RTT, pllPreScale);
+
+	if (rttIRQSource & RTT_MR_ALMIEN) {
+		uint32_t ul_previous_time;
+		ul_previous_time = rtt_read_timer_value(RTT);
+		while (ul_previous_time == rtt_read_timer_value(RTT))
+		;
+		rtt_write_alarm_time(RTT, IrqNPulses + ul_previous_time);
+	}
+
+	/* config NVIC */
+	NVIC_DisableIRQ(RTT_IRQn);
+	NVIC_ClearPendingIRQ(RTT_IRQn);
+	NVIC_SetPriority(RTT_IRQn, 4);
+	NVIC_EnableIRQ(RTT_IRQn);
+
+	/* Enable RTT interrupt */
+	if (rttIRQSource & (RTT_MR_RTTINCIEN | RTT_MR_ALMIEN))
+	rtt_enable_interrupt(RTT, rttIRQSource);
+	else
+	rtt_disable_interrupt(RTT, RTT_MR_RTTINCIEN | RTT_MR_ALMIEN);
+}
+void RTT_Handler(void) {
+  uint32_t ul_status;
+  ul_status = rtt_get_status(RTT);
+
+  /* IRQ due to Alarm */
+  if ((ul_status & RTT_SR_ALMS) == RTT_SR_ALMS) {
+		afec_channel_enable(AFEC_POT, AFEC_POT_CHANNEL);
+		afec_start_software_conversion(AFEC_POT);
+		RTT_init(1000, 100, RTT_MR_ALMIEN);
+   }  
+}
+static void config_AFEC_pot(Afec *afec, uint32_t afec_id, uint32_t afec_channel,
+afec_callback_t callback) {
+	/*************************************
+	* Ativa e configura AFEC
+	*************************************/
+	/* Ativa AFEC - 0 */
+	afec_enable(afec);
+
+	/* struct de configuracao do AFEC */
+	struct afec_config afec_cfg;
+
+	/* Carrega parametros padrao */
+	afec_get_config_defaults(&afec_cfg);
+
+	/* Configura AFEC */
+	afec_init(afec, &afec_cfg);
+
+	/* Configura trigger por software */
+	afec_set_trigger(afec, AFEC_TRIG_SW);
+
+	/*** Configuracao espec�fica do canal AFEC ***/
+	struct afec_ch_config afec_ch_cfg;
+	afec_ch_get_config_defaults(&afec_ch_cfg);
+	afec_ch_cfg.gain = AFEC_GAINVALUE_0;
+	afec_ch_set_config(afec, afec_channel, &afec_ch_cfg);
+
+	/*
+	* Calibracao:
+	* Because the internal ADC offset is 0x200, it should cancel it and shift
+	down to 0.
+	*/
+	afec_channel_set_analog_offset(afec, afec_channel, 0x200);
+
+	/***  Configura sensor de temperatura ***/
+	struct afec_temp_sensor_config afec_temp_sensor_cfg;
+
+	afec_temp_sensor_get_config_defaults(&afec_temp_sensor_cfg);
+	afec_temp_sensor_set_config(afec, &afec_temp_sensor_cfg);
+
+	/* configura IRQ */
+	afec_set_callback(afec, afec_channel, callback, 1);
+	NVIC_SetPriority(afec_id, 4);
+	NVIC_EnableIRQ(afec_id);
+}
+
 /************************************************************************/
 /* lvgl                                                                 */
 /************************************************************************/
 
 static void event_handler(lv_event_t * e) {
 	lv_event_code_t code = lv_event_get_code(e);
+	
+}
+static void btn1_handler(lv_event_t * e) {
+	lv_event_code_t code = lv_event_get_code(e);
 
 	if(code == LV_EVENT_CLICKED) {
-		LV_LOG_USER("Clicked");
+		lv_scr_load(scr2); // exibe tela 1
 	}
-	else if(code == LV_EVENT_VALUE_CHANGED) {
-		LV_LOG_USER("Toggled");
+	
+}
+
+static void btn2_handler(lv_event_t * e) {
+	lv_event_code_t code = lv_event_get_code(e);
+
+	if(code == LV_EVENT_CLICKED) {
+		lv_scr_load(scr1); // exibe tela 1
 	}
+	
 }
 
 static void menu_handler(lv_event_t * e) {
@@ -174,8 +282,8 @@ void lv_termostato(void) {
 
     lv_obj_t * labelBtn1;
 
-    lv_obj_t * btn1 = lv_btn_create(lv_scr_act());
-    lv_obj_add_event_cb(btn1, event_handler, LV_EVENT_ALL, NULL);
+    lv_obj_t * btn1 = lv_btn_create(scr1);
+    lv_obj_add_event_cb(btn1, btn1_handler, LV_EVENT_ALL, NULL);
     lv_obj_align(btn1, LV_ALIGN_BOTTOM_LEFT, 0, -10);
 	lv_obj_add_style(btn1, &style, 0);
 
@@ -184,9 +292,21 @@ void lv_termostato(void) {
     lv_obj_center(labelBtn1);
 	lv_obj_set_width(btn1, 50);  lv_obj_set_height(btn1, 50);
 
+	lv_obj_t * labelBtn2;
+
+    lv_obj_t * btn2 = lv_btn_create(scr2);
+    lv_obj_add_event_cb(btn2, btn2_handler, LV_EVENT_ALL, NULL);
+    lv_obj_align(btn2, LV_ALIGN_BOTTOM_LEFT, 0, -10);
+	lv_obj_add_style(btn2, &style, 0);
+
+    labelBtn2 = lv_label_create(btn2);
+    lv_label_set_text(labelBtn2, LV_SYMBOL_POWER);
+    lv_obj_center(labelBtn2);
+	lv_obj_set_width(btn2, 50);  lv_obj_set_height(btn2, 50);
+
 	lv_obj_t * labelBtnMenu;
 
-    lv_obj_t * btnMenu = lv_btn_create(lv_scr_act());
+    lv_obj_t * btnMenu = lv_btn_create(scr1);
     lv_obj_add_event_cb(btnMenu, menu_handler, LV_EVENT_ALL, NULL);
     lv_obj_align(btnMenu, LV_ALIGN_BOTTOM_LEFT, 60, -10);
 	lv_obj_add_style(btnMenu, &style, 0);
@@ -198,7 +318,7 @@ void lv_termostato(void) {
 
 	lv_obj_t * labelBtnClock;
 
-    lv_obj_t * btnClk = lv_btn_create(lv_scr_act());
+    lv_obj_t * btnClk = lv_btn_create(scr1);
     lv_obj_add_event_cb(btnClk, clk_handler, LV_EVENT_ALL, NULL);
     lv_obj_align(btnClk, LV_ALIGN_BOTTOM_LEFT, 110, -10);
 	lv_obj_add_style(btnClk, &style, 0);
@@ -210,7 +330,7 @@ void lv_termostato(void) {
 	
 	lv_obj_t * labelBtnUp;
 
-	lv_obj_t * btnUp = lv_btn_create(lv_scr_act());
+	lv_obj_t * btnUp = lv_btn_create(scr1);
 	lv_obj_add_event_cb(btnUp, up_handler, LV_EVENT_ALL, NULL);
 	lv_obj_align(btnUp, LV_ALIGN_BOTTOM_RIGHT, -70, -10);
 	lv_obj_add_style(btnUp, &style, 0);
@@ -222,7 +342,7 @@ void lv_termostato(void) {
 
 	lv_obj_t * labelBtnDown;
 
-    lv_obj_t * btnDown = lv_btn_create(lv_scr_act());
+    lv_obj_t * btnDown = lv_btn_create(scr1);
     lv_obj_add_event_cb(btnDown, down_handler, LV_EVENT_ALL, NULL);
     lv_obj_align(btnDown, LV_ALIGN_BOTTOM_RIGHT, 0, -10);
 	lv_obj_add_style(btnDown, &style, 0);
@@ -232,19 +352,19 @@ void lv_termostato(void) {
     lv_obj_center(labelBtnDown);
 	lv_obj_set_width(btnDown, 70);  lv_obj_set_height(btnDown, 50);
 
-	labelFloor = lv_label_create(lv_scr_act());
+	labelFloor = lv_label_create(scr1);
     lv_obj_align(labelFloor, LV_ALIGN_LEFT_MID, 35 , -45);
     lv_obj_set_style_text_font(labelFloor, &dseg70, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(labelFloor, lv_color_white(), LV_STATE_DEFAULT);
     lv_label_set_text_fmt(labelFloor, "%02d", 23);
 
-	labelClock = lv_label_create(lv_scr_act());
+	labelClock = lv_label_create(scr1);
 	lv_obj_align(labelClock, LV_ALIGN_TOP_RIGHT, 0 , 10);
 	lv_obj_set_style_text_font(labelClock, &dseg30, LV_STATE_DEFAULT);
 	lv_obj_set_style_text_color(labelClock, lv_color_white(), LV_STATE_DEFAULT);
 	lv_label_set_text_fmt(labelClock, "%02d:%02d", 17, 46);
 
-	labelSetValue = lv_label_create(lv_scr_act());
+	labelSetValue = lv_label_create(scr1);
 	lv_obj_align(labelSetValue, LV_ALIGN_TOP_RIGHT, -10, 70);
 	lv_obj_set_style_text_font(labelSetValue, &dseg40, LV_STATE_DEFAULT);
 	lv_obj_set_style_text_color(labelSetValue, lv_color_white(), LV_STATE_DEFAULT);
@@ -280,13 +400,29 @@ void lv_ex_btn_1(void) {
 
 static void task_lcd(void *pvParameters) {
 	int px, py;
-
+	 // Criando duas telas
+    scr1  = lv_obj_create(NULL);
+    scr2  = lv_obj_create(NULL);
 	lv_termostato();
-
+	lv_scr_load(scr1); // exibe tela 1
 	for (;;)  {
 		lv_tick_inc(50);
 		lv_task_handler();
 		vTaskDelay(50);
+	}
+}
+static void task_afec(void *pvParameters) {
+	printf("Inicializando");
+	config_AFEC_pot(AFEC_POT, AFEC_POT_ID, AFEC_POT_CHANNEL, AFEC_pot_Callback);
+	RTT_init(1000, 100, RTT_MR_ALMIEN);
+	int value = 0;
+	while (1) {
+		if (xQueueReceive(xQueue_AFEC, &value, 0)) {
+			//limitei a 100 a temperatura maxima
+			// 100 -- 4092
+			//  x -- value
+			lv_label_set_text_fmt(labelFloor, "%02d", value*100/4092);
+		}
 	}
 }
 
@@ -307,9 +443,8 @@ static void task_rtc(void *pvParameters) {
 			rtc_get_time(RTC, &current_hour, &current_min, &current_sec);
 			rtc_get_date(RTC, &current_year, &current_month, &current_day, &current_week);
 			lv_label_set_text_fmt(labelClock, "%02d %02d", current_hour, current_min);
-			vTaskDelay(1000);
+			vTaskDelay(1000); 
 			lv_label_set_text_fmt(labelClock, "%02d:%02d", current_hour, current_min);
-
 		}
 	}
 }
@@ -405,6 +540,12 @@ int main(void) {
 	configure_touch();
 	configure_lvgl();
 
+	xQueue_AFEC = xQueueCreate(32, sizeof(int));
+
+	if (xQueue_AFEC == NULL){
+		printf("falha em criar a queue \n");
+	}
+
 	/* Create task to control oled */
 	if (xTaskCreate(task_lcd, "LCD", TASK_LCD_STACK_SIZE, NULL, TASK_LCD_STACK_PRIORITY, NULL) != pdPASS) {
 		printf("Failed to create lcd task\r\n");
@@ -414,6 +555,11 @@ int main(void) {
 	  printf("Failed to create rtc task\r\n");
 	}
 
+	/* Create task to control oled */
+	if (xTaskCreate(task_afec, "afec", TASK_LCD_STACK_SIZE, NULL,
+	TASK_LCD_STACK_PRIORITY, NULL) != pdPASS) {
+		printf("Failed to create task_afec\r\n");
+	}
 	/* Attempt to create a semaphore. */
 	xSemaphoreHora = xSemaphoreCreateBinary();
 	if (xSemaphoreHora == NULL)
